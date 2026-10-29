@@ -36,7 +36,17 @@
       },
       "bootstrap": {
         "mode": "wake"
-      }
+      },
+      "receivers": [
+        {
+          "id": "intake",
+          "name": "启动简报接收器",
+          "description": "接收用户通过 brief 通道注入的启动简报。",
+          "rule": [
+            "brief"
+          ]
+        }
+      ]
     },
     {
       "id": "builder",
@@ -46,8 +56,26 @@
       "preset": "standard",
       "permission": "workspace-write",
       "systemPrompt": {
-        "inline": "你是产品交付团队的实现者。你只在收到 activation 后工作；你通过 channel 交接，不直接指挥其他 agent。改代码前先确认输入 artifact 的来源与验收标准；完成后必须提交 build-report 并调用 team_finish。不要修改 .dsh/.dsh-workspace-team/ 下的配置与状态文件。"
-      }
+        "inline": "你是产品交付团队的实现者。你负责按规格完成工作区内的代码改动与自测；改代码前先确认真实需求、约束与验收标准，评审打回时逐条处理可执行意见。你只做实现，不替评审者下结论。"
+      },
+      "receivers": [
+        {
+          "id": "spec-inbox",
+          "name": "规格接收器",
+          "description": "首次实现：等待 analyst 的 spec。",
+          "rule": [
+            "spec"
+          ]
+        },
+        {
+          "id": "rework-inbox",
+          "name": "返工接收器",
+          "description": "评审打回：等待 reviewer 的 review。",
+          "rule": [
+            "review"
+          ]
+        }
+      ]
     },
     {
       "id": "reviewer",
@@ -62,8 +90,18 @@
         "reasoningEffort": "high"
       },
       "systemPrompt": {
-        "inline": "你是产品交付团队的评审者，只读，不改代码。你依据 spec 的 acceptanceCriteria 与 build-report 做判断。通过时把最终说明提交到 publish 通道；打回时把结构化意见提交到 review 通道。两类交付物互斥。完成后调用 team_finish。"
-      }
+        "inline": "你是产品交付团队的评审者，只读，不改代码。你依据需求规格与实现报告判断交付是否达标；通过时给出面向用户的最终说明，打回时给出可执行、可验证的修改意见。你的结论只做质量判断，不替实现者改代码。"
+      },
+      "receivers": [
+        {
+          "id": "review-inbox",
+          "name": "实现报告接收器",
+          "description": "接收 builder 的 build-report。",
+          "rule": [
+            "build-report"
+          ]
+        }
+      ]
     },
     {
       "id": "auditor",
@@ -73,7 +111,7 @@
       "preset": "standard",
       "permission": "read-only",
       "systemPrompt": {
-        "inline": "你是产品交付团队的审计员。检查工作区的依赖、配置、密钥与敏感信息风险，输出可执行的 Markdown 审计报告。只读，不修改工作区文件（提交 artifact 由团队工具完成）。"
+        "inline": "你是产品交付团队的审计员。检查工作区的依赖、配置、密钥与敏感信息风险，输出可执行的 Markdown 审计报告。你保持只读，不修改工作区文件；报告要包含风险等级与修复建议。"
       }
     }
   ],
@@ -87,9 +125,10 @@
         "source": "user"
       },
       "to": {
-        "kind": "node",
+        "kind": "receiver",
         "pipelineId": "delivery",
-        "nodeId": "analyst"
+        "nodeId": "analyst",
+        "receiverId": "intake"
       },
       "artifact": {
         "kind": "text",
@@ -97,8 +136,6 @@
       },
       "required": false,
       "delivery": {
-        "required": true,
-        "timing": "on-activate",
         "inline": "always"
       }
     },
@@ -112,9 +149,10 @@
         "nodeId": "analyst"
       },
       "to": {
-        "kind": "node",
+        "kind": "receiver",
         "pipelineId": "delivery",
-        "nodeId": "builder"
+        "nodeId": "builder",
+        "receiverId": "spec-inbox"
       },
       "artifact": {
         "kind": "json",
@@ -131,8 +169,6 @@
         }
       ],
       "delivery": {
-        "required": true,
-        "timing": "on-activate",
         "inline": "auto"
       }
     },
@@ -146,9 +182,10 @@
         "nodeId": "builder"
       },
       "to": {
-        "kind": "node",
+        "kind": "receiver",
         "pipelineId": "delivery",
-        "nodeId": "reviewer"
+        "nodeId": "reviewer",
+        "receiverId": "review-inbox"
       },
       "artifact": {
         "kind": "json",
@@ -157,8 +194,6 @@
       },
       "required": true,
       "delivery": {
-        "required": true,
-        "timing": "on-activate",
         "inline": "auto"
       }
     },
@@ -172,9 +207,10 @@
         "nodeId": "reviewer"
       },
       "to": {
-        "kind": "node",
+        "kind": "receiver",
         "pipelineId": "delivery",
-        "nodeId": "builder"
+        "nodeId": "builder",
+        "receiverId": "rework-inbox"
       },
       "artifact": {
         "kind": "json",
@@ -190,8 +226,6 @@
         }
       ],
       "delivery": {
-        "required": true,
-        "timing": "on-activate",
         "inline": "auto"
       },
       "retention": {
@@ -228,7 +262,6 @@
         }
       ],
       "delivery": {
-        "required": false,
         "inline": "path"
       },
       "retention": {
@@ -265,7 +298,6 @@
         }
       ],
       "delivery": {
-        "required": false,
         "inline": "path"
       }
     }
@@ -289,7 +321,7 @@
           "name": "需求分析",
           "agentId": "analyst",
           "instructions": {
-            "inline": "读取 activation 消息中 brief 通道的启动简报，产出结构化需求规格。\n\n要求：\n1. 覆盖目标、范围、验收标准与风险；验收标准必须可验证。\n2. 调用 team_submit_artifact，channelId=\"spec\"，json 参数传对象；内容必须符合 schemas/spec.schema.json。\n3. 提交被接受后调用 team_finish(status=\"succeeded\", summary=\"...\")。\n4. 聊天消息只做简短说明，不要把完整规格贴进聊天。"
+            "inline": "读取 activation 给出的启动简报，产出结构化需求规格。\n\n要求：\n1. 覆盖目标、范围、验收标准与风险；验收标准必须可验证。\n2. 规格内容必须符合 activation 中给出的 schema；非目标与开放问题要显式写出。\n3. 聊天消息只做简短说明，不要把完整规格贴进聊天。"
           },
           "activation": {
             "maxActivations": 1
@@ -305,10 +337,7 @@
           "name": "实现",
           "agentId": "builder",
           "instructions": {
-            "inline": "输入可能来自 spec（首次实现）或 review（评审打回），activation 消息会标明来源、artifact id 与 producer 节点。\n\n要求：\n1. 若输入是 review，逐条处理 comments；若输入是 spec，按 acceptanceCriteria 实现。\n2. 在工作区完成改动并运行必要测试。\n3. 调用 team_submit_artifact，channelId=\"build-report\"，提交 JSON：summary/changes/tests/artifacts。\n4. 提交被接受后调用 team_finish(status=\"succeeded\", summary=\"...\")。\n5. 不要修改 .dsh/.dsh-workspace-team/ 下的配置与状态文件。"
-          },
-          "inputs": {
-            "mode": "any"
+            "inline": "输入可能来自 spec（首次实现）或 review（评审打回），activation 会标明来源、artifact id 与 producer 节点。\n\n要求：\n1. 若输入是 review，逐条处理 comments；若输入是 spec，按 acceptanceCriteria 实现。\n2. 在工作区完成改动并运行必要测试。\n3. 实现报告要写清 summary/changes/tests/artifacts。\n4. 不要修改 .dsh/.dsh-workspace-team/ 下的配置与状态文件。"
           },
           "activation": {
             "maxActivations": 4,
@@ -329,7 +358,7 @@
           "name": "评审",
           "agentId": "reviewer",
           "instructions": {
-            "inline": "阅读 build-report 与工作区改动，依据 spec 的 acceptanceCriteria 判断。\n\n通过：\n- 把面向用户的最终说明（Markdown，至少 200 字）提交到 publish 通道（text）。\n- 调用 team_finish(status=\"succeeded\")；不要提交 review。\n\n打回：\n- 提交 review 通道（JSON，status=\"changes_requested\"，comments 至少一条可执行意见）。\n- 调用 team_finish(status=\"succeeded\")；不要提交 publish。\n\n你只评审，不修改代码。"
+            "inline": "阅读 build-report 与工作区改动，依据 spec 的 acceptanceCriteria 判断。\n\n通过：\n- 给出面向用户的最终说明（Markdown，至少 200 字）。\n- 不要提交 review。\n\n打回：\n- 给出 review：status=\"changes_requested\"，comments 至少一条可执行意见。\n- 不要提交 publish。\n\n你只评审，不修改代码。"
           },
           "activation": {
             "maxActivations": 4
@@ -384,7 +413,7 @@
           "name": "工作区审计",
           "agentId": "auditor",
           "instructions": {
-            "inline": "审计当前工作区的依赖、配置、密钥与敏感信息风险。\n\n要求：\n1. 输出 Markdown 审计报告，至少 200 字，包含风险等级与修复建议。\n2. 调用 team_submit_artifact，channelId=\"audit-report\"，text 参数传报告全文。\n3. 提交被接受后调用 team_finish(status=\"succeeded\")。"
+            "inline": "审计当前工作区的依赖、配置、密钥与敏感信息风险。\n\n要求：\n1. 输出 Markdown 审计报告，至少 200 字。\n2. 报告包含风险等级、影响范围与修复建议。\n3. 只读审计，不修改工作区文件。"
           },
           "activation": {
             "maxActivations": 1

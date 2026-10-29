@@ -183,7 +183,8 @@
         "id",
         "name",
         "role",
-        "preset"
+        "preset",
+        "systemPrompt"
       ],
       "properties": {
         "id": {
@@ -217,7 +218,16 @@
           "$ref": "#/$defs/model"
         },
         "systemPrompt": {
-          "$ref": "#/$defs/textSource"
+          "$ref": "#/$defs/textSource",
+          "description": "工作区级角色/领域提示词，只写身份、职责与领域约束；引擎会在其后追加内置团队协议（工具清单与调用方法）。"
+        },
+        "receivers": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/receiver"
+          },
+          "description": "该 agent 的接收器。每个接收器只有一条 rule；不同接收器独立满足、各自入队，先满足先激活。"
         },
         "session": {
           "$ref": "#/$defs/agentSession"
@@ -226,6 +236,44 @@
           "$ref": "#/$defs/bootstrap"
         }
       }
+    },
+    "receiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "rule"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "false 时该接收器不参与激活评估。"
+        },
+        "rule": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "接收规则：一个 channel id 数组。每个 channel 都必须有未消费的合格交付物，接收器才满足；满足后这些 channel 各取队首一份，作为一个 activation 的输入。"
+        }
+      },
+      "description": "agent 的一个接收器。每个接收器只有一条规则；不同接收器各自满足、各自入队，谁先满足谁先激活。"
     },
     "settings": {
       "type": "object",
@@ -446,19 +494,24 @@
           "required": [
             "kind",
             "pipelineId",
-            "nodeId"
+            "nodeId",
+            "receiverId"
           ],
           "properties": {
             "kind": {
-              "const": "node"
+              "const": "receiver"
             },
             "pipelineId": {
               "$ref": "#/$defs/id"
             },
             "nodeId": {
               "$ref": "#/$defs/id"
+            },
+            "receiverId": {
+              "$ref": "#/$defs/id"
             }
-          }
+          },
+          "description": "投递目标是一个接收器：nodeId 决定它挂在哪个 pipeline 节点上，receiverId 决定由该 agent 的哪个接收器接。"
         },
         {
           "type": "object",
@@ -757,19 +810,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "timing": {
-          "enum": [
-            "on-activate",
-            "immediate"
-          ],
-          "default": "on-activate",
-          "description": "on-activate=等 join 满足后随 activation 一起投递；immediate=合格即 steer/send 给消费者。"
-        },
-        "required": {
-          "type": "boolean",
-          "default": true,
-          "description": "该通道是否是消费者 activation 的必需输入。"
-        },
         "inline": {
           "enum": [
             "auto",
@@ -951,9 +991,6 @@
         "instructions": {
           "$ref": "#/$defs/textSource"
         },
-        "inputs": {
-          "$ref": "#/$defs/inputs"
-        },
         "activation": {
           "$ref": "#/$defs/activation"
         },
@@ -966,50 +1003,6 @@
           "$ref": "#/$defs/point"
         }
       }
-    },
-    "inputs": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "enum": [
-            "all",
-            "any",
-            "quorum"
-          ],
-          "default": "all",
-          "description": "all=所有 required 入通道都有未消费合格交付物；any=任一；quorum=达到 quorum 数量。"
-        },
-        "quorum": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 64
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "mode": {
-                "const": "quorum"
-              }
-            },
-            "required": [
-              "mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "quorum"
-            ],
-            "properties": {
-              "quorum": {
-                "type": "integer"
-              }
-            }
-          }
-        }
-      ]
     },
     "activation": {
       "type": "object",

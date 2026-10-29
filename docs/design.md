@@ -38,8 +38,10 @@ DSH 已有两类相近能力，本设计不复用它们的运行时，但复用�
 - **Team**：工作区唯一的团队声明。
 - **Agent**：一个角色 + 一个真实 DSH 会话 + 一套系统提示词/工具。
 - **Pipeline**：一张有向有环图，有 entry、terminal、budget。
-- **Node**：pipeline 里的一个执行位，绑定一个 agent；同一 agent 可被多个 node 引用，但串行执行。
-- **Channel**：一条有向边，声明 from/to、交付物类型、验收条件、路由条件、投递策略。
+- **Node**：pipeline 里的一个执行位，绑定一个 agent 和一组接收器；同一 agent 可被多个 node 引用，但串行执行。
+- **Receiver**：agent 上的一个接收器，只有一条接收规则。channel 的 `to` 指定它挂在哪个节点。
+- **ReceiveRule**：一个入通道数组。数组里的每个通道都有未消费的合格交付物时，接收器满足，产生一个 activation 请求。
+- **Channel**：一条 1:1 的有向边，声明 from/to、交付物类型、验收条件、路由条件、注入策略。
 - **Artifact**：一次成功提交的交付物，带内容、hash、provenance、schema 校验结果。
 - **Activation**：节点的一次执行实例；消费一组输入，产生一组输出。
 - **Run**：pipeline 的一次运行；包含多个 activation 和 artifact。
@@ -47,13 +49,14 @@ DSH 已有两类相近能力，本设计不复用它们的运行时，但复用�
 ### 3.2 不变量
 
 1. 一个工作区最多一个 `team.json`，路径固定。
-2. channel 是图的唯一事实来源；node 的入/出通道由 channel 反向推导。
+2. channel 是图的唯一事实来源；node 的入/出通道由 channel 反向推导。接收器规则只对入通道分组，不产生新的边。
 3. 一个 agent 恰好绑定一个会话（1:1）；同一时刻最多执行一个 activation，复用时按 agent FIFO 串行。
-4. 一个 activation 的输入在 dispatch 时被原子消费，不会被另一个 activation 重复消费。
-5. 任何环都必须有界；无界环在加载期拒绝。
-6. 交付物先验收、后路由；验收失败不产生 delivery。
-7. 引擎不执行交付物内容，只存储、校验、传递。
-8. 所有运行状态可从 append-only 事件日志重建。
+4. 一个 activation 的输入由命中的那条接收规则决定；dispatch 时对规则里的每个通道各取队首一份，原子消费，不会被另一个 activation 重复消费。
+5. 一个接收器只能属于一个 node；同一 agent 的多个 node 必须使用不同接收器。
+6. 任何环都必须有界；无界环在加载期拒绝。
+7. 交付物先验收、后路由；验收失败不产生 delivery。
+8. 引擎不执行交付物内容，只存储、校验、传递。
+9. 所有运行状态可从 append-only 事件日志重建。
 
 ## 4. 总体架构
 
@@ -74,7 +77,7 @@ DSH 已有两类相近能力，本设计不复用它们的运行时，但复用�
 │  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘          │
 │          │ tools             │ tools             │ tools             │
 │          ▼                   ▼                   ▼                   │
-│   team_submit_artifact / team_finish / team_inputs / team_status     │
+│   team_get_context / team_submit_artifact / team_finish / team_status │
 │                                                                      │
 │  Web UI: conversation.composer.dock  ←  GET /binding?sessionId=...   │
 └──────────────────────────────────────────────────────────────────────┘
@@ -118,34 +121,42 @@ DSH 已有两类相近能力，本设计不复用它们的运行时，但复用�
 {
   "id": "spec",
   "from": { "kind": "node", "pipelineId": "delivery", "nodeId": "analyst" },
-  "to":   { "kind": "node", "pipelineId": "delivery", "nodeId": "builder" },
+  "to":   { "kind": "receiver", "pipelineId": "delivery", "nodeId": "builder", "receiverId": "spec-inbox" },
   "artifact": { "kind": "json", "schema": "schemas/spec.schema.json" }
 }
 ```
 
-- node 的**入通道**：所有 `to` 指向它的 channel。
+- **channel 是 1:1 的边**：恰好一个 `from`、一个 `to`；扇出必须建多条 channel，不能把多个消费者塞进一个 channel。
+- **消费者是 receiver**：`to` 里的 `nodeId` 决定接收器挂在哪个节点，`receiverId` 决定由该 agent 的哪个接收器接。
+- node 的**入通道**：所有 `to.nodeId` 指向它的 channel；每个入通道通过 `to.receiverId` 归属一个接收器。
 - node 的**出通道**：所有 `from` 指向它的 channel。
-- 不需要在 node 上再列一遍 channel，避免三处不一致。
+- 不需要在 node 上再列一遍 channel，避免三处不一致；也不需要 node.receiverIds，接收器由 channel 的 `to` 推导。
 - 外部两端：`from: external/user`（启动 brief）、`to: external/file`（落盘）。
-- v1 限制：node→node 的 channel 两端必须同 pipeline；跨 pipeline 留给 v2 的 port。
+- v1 限制：`from` 是 node、`to` 是 receiver 时两端必须同 pipeline；跨 pipeline 留给 v2 的 port。
 
-### 6.2 节点何时就绪
+### 6.2 接收器满足与 activation 队列
 
 引擎为每条 channel 维护一个 FIFO：已验收、已通过 `when`、未被消费的交付物。
 
-对节点 N，按 `inputs.mode` 计算：
+每个接收器只有一条 `rule`（channel id 数组）。一个接收器满足，当且仅当 `rule` 里的每个 channel 都至少有一份未消费的合格交付物。
 
-- `all`：每个 `delivery.required=true` 的入通道都至少有一个未消费交付物。可选入通道有货时一并带上。
-- `any`：任一 required 入通道有未消费交付物。
-- `quorum`：有未消费交付物的 required 入通道数 ≥ `quorum`。
+满足之后：
 
-满足后节点进入 `ready`，但**不立刻消费**。真正 dispatch 时再原子标记消费；如果派发前被取消/暂停，交付物释放回队列。
+1. 产生一个 activation 请求，带上该接收器、它的 rule、以及 rule 里每个 channel 的队首交付物。
+2. 请求进入该 agent 的 FIFO。**先满足先入队**；后满足的排后面，不丢弃，也不按优先级插队。
+3. 同一 agent 一次只执行一个 activation。agent 在跑别的 activation 或用户对话时，新请求等待；这与用户消息的排队是同一套串行语义。
+4. dispatch 时把该请求的输入原子标记为已消费；如果派发前被取消/暂停，交付物释放回队列。
+5. 不同接收器互不合并：`spec-inbox` 和 `rework-inbox` 各自满足、各自入队，即使它们属于同一个 agent。
+
+规则是**合取**，没有 `all/any/quorum` 模式。需要“可选输入”或多种组合时，定义多个接收器，每个接收器一条规则。
+
+没有入通道的节点不参与上述计算：它在 pipeline 启动时被触发一次（典型是单节点 audit）。
 
 ### 6.3 activation 消息（补：你草案里的第 2 点）
 
 你草案的第 2 点当时是空的。这里补成：**调度授权（dispatch）**。
 
-agent 初始化后处于 `standby`，它不需要轮询，也不需要申请许可。引擎在 join 满足时发送一条 `[team:activation]` 消息，这条消息就是“允许执行”。消息必须包含：
+agent 初始化后处于 `standby`，它不需要轮询，也不需要申请许可。引擎在**某个接收器的规则满足**时发送一条 `[team:activation]` 消息，这条消息就是“允许执行”。消息必须包含：
 
 ```text
 [team:activation] act_01J...
@@ -156,6 +167,8 @@ agent: builder (实现者)
 run: run_01J...
 iteration: 2 / 4
 goal: 为 CLI 增加 --json 输出
+receiver: rework-inbox
+rule: [review]
 
 inputs:
 - channel: review
@@ -171,7 +184,7 @@ outputs (finish 前必须提交):
   required: true
   schema: schemas/build-report.schema.json
 
-rules:
+protocol:
 - 只通过 team_submit_artifact 提交交付物
 - 全部必需输出被接受后调用 team_finish
 - 不要修改 .dsh/.dsh-workspace-team/
@@ -183,16 +196,17 @@ instructions:
 要点：
 
 1. **输入带 provenance**：agent 明确知道哪份交付物来自哪个 pipeline/node/agent、哪个 channel、哪次 activation。这就是你草案第 3 点的落地。
-2. **输出契约前置**：agent 在开始前就知道要交什么、schema 在哪、哪些是必需的。
-3. **任务说明与系统提示词分离**：node instructions 只出现在 activation 里，不写进系统提示词，保证系统提示词稳定、可缓存。
-4. **完成协议明确**：`team_finish` 才算完成；回合结束但没 finish 会触发提醒，再超时判失败。
+2. **规则整体交付**：`inputs` 列出命中接收器 `rule` 里的**全部通道**，每个通道一份交付物；agent 不会拿到半套输入。
+3. **输出契约前置**：agent 在开始前就知道要交什么、schema 在哪、哪些是必需的。
+4. **任务说明与系统提示词分离**：node instructions 只出现在 activation 里，不写进系统提示词，保证系统提示词稳定、可缓存。
+5. **完成协议明确**：`team_finish` 才算完成；回合结束但没 finish 会触发提醒，再超时判失败。
 
 投递通道：
 
 - 如果 agent 当前 idle：`agent.send(message, "next-turn", wakeup=true)`。
 - 如果 agent 正被用户对话占用：等待 idle（受 timeout 约束），再 send；或按 `humanChat=steer` 注入。
 - 如果 agent 正在执行另一个 activation：per-agent FIFO 排队，等当前 activation 结束。
-- `delivery.timing=immediate` 的交付物可以在 activation 运行中通过 `agent.steer` 注入，但默认 `on-activate`，避免半套输入把 agent 提前唤醒。
+- 交付物只在 activation 消息里成组投递，不做“半套输入”的即时唤醒；这保证规则语义不会被单条 artifact 绕过。
 
 ### 6.4 有环图必须有界
 
@@ -217,8 +231,7 @@ instructions:
 
 1. terminal 节点按 `completion.mode` 成功过（`all-terminal` 要求全部，`any-terminal` 要求任一）。
 2. 图中没有 `ready`、`dispatching`、`running` 的节点。
-3. 没有会被 `immediate` 投递触发的未处理队列。
-4. 没有等待重试的 activation。
+3. 没有等待重试的 activation。
 
 然后进入 `completing`：写 run 摘要、清理临时状态、发事件，最后 `completed`。
 
@@ -232,7 +245,7 @@ instructions:
 
 ### 6.6 暂停/恢复
 
-- `pause`：停止新的 dispatch；running 的 activation 允许跑完；ready 队列保留；immediate 投递暂停。
+- `pause`：停止新的 dispatch；running 的 activation 允许跑完；ready 队列与未消费的交付物保留。
 - `resume`：重新计算 ready，继续 dispatch；不重置节点计数。
 - 引擎重启：`resumeInterrupted=mark-failed`（默认）把中断的 activation 标失败并按 `onFailure` 处理；`redispatch` 用同一组输入重派；`never` 只记录、不自动处理。
 
@@ -244,7 +257,7 @@ instructions:
 submit → size/type check → schema validate → acceptance predicates
       → store (canonical) → when predicates
           ├─ false → filtered（入库、记录、不投递）
-          └─ true  → delivery 入队 / immediate steer / file sink
+          └─ true  → channel FIFO 入队 / file sink
 ```
 
 - **submit**：agent 调用 `team_submit_artifact`，参数三选一：`text`、`json`、`path`。`path` 指向工作区文件，引擎读取后按同一流程处理，适合大文本。
@@ -253,12 +266,12 @@ submit → size/type check → schema validate → acceptance predicates
 - **acceptance**：额外的 JSON Pointer 条件，用于业务验收。
 - **store**：写 canonical 内容 + `meta.json`（id、sha256、producer、run、channel、schema hash、createdAt）。
 - **when**：路由条件；false 只记录 filtered，不投递。
-- **delivery**：按 `delivery.timing` 入队或即时投递；file sink 原子写盘。
+- **delivery**：合格 artifact 进入 channel FIFO；consumer 的接收规则在 dispatch 时消费队首。file sink 原子写盘。
 
 失败语义：
 
 - schema/acceptance 失败：工具返回错误，不入库、不投递、不算输出义务完成；agent 可在同一 activation 内修正重提。
-- 重复提交同一 channel：每次都是新 artifact；默认只投递最新，旧的可被 retention 清理。需要“每次都要处理”的语义时，消费队列会保留多个。
+- 重复提交同一 channel：每次都是新 artifact，按 FIFO 入队；未消费的 artifact 不会被 retention 删除，只有已消费/过期项会被清理。
 - 输出义务：`channel.required=true` 的通道，在 `team_finish` 时必须有**本次 activation** 被接受的 artifact。
 
 ### 7.2 provenance
@@ -274,6 +287,7 @@ submit → size/type check → schema validate → acceptance predicates
   "agentId": "reviewer",
   "runId": "run_01J...",
   "activationId": "act_01J...",
+  "receiverId": "rework-inbox",
   "attempt": 1,
   "sha256": "...",
   "summary": "需要处理 2 个 blocker",
@@ -364,19 +378,33 @@ commands.execute(agent, "/permission " + permission)   # permission 是 preset �
 
 ### 8.3 系统提示词组成
 
-每个 agent 会话固定三段：
+每个 agent 会话的系统提示词由**两段来源、三个逻辑部分**组成，顺序固定：
 
-| 段 | 注入方式 | order | 内容 |
-|---|---|---|---|
-| 角色 | `systemPrompt.section` | `DEPLOYMENT_PERSONA_PREFIX + 10` | `agent.systemPrompt` + `role` |
-| roster | `systemPrompt.context`（required） | `TEAM_IDENTITY + 1` | 团队与全部 agent 的静态名册 |
-| 协议 | `systemPrompt.context`（required） | `TEAM_IDENTITY + 2` | 只通过 channel 交接、工具用法、禁止改配置、完成协议 |
+| 顺序 | 段 | 注入方式 | order | 来源 | 内容 |
+|---|---|---|---|---|---|
+| 1 | 工作区角色 | `systemPrompt.section` | `DEPLOYMENT_PERSONA_PREFIX + 10` | `team.json` | `agent.systemPrompt` + `role` |
+| 2 | 内置团队协议 | `systemPrompt.section` | `DEPLOYMENT_PERSONA_PREFIX + 20` | 引擎 | 团队工具清单、调用方法、channel/artifact/finish 规则、安全边界 |
+| 3 | roster | `systemPrompt.context`（required） | `TEAM_IDENTITY + 1` | `team.json` | 团队与全部 agent 的静态名册 |
 
-为什么 roster/协议用 `context` 而不是 `section`：
+**顺序不能反**：工作区配置先交代“你是谁、负责什么”，内置协议紧接着交代“在团队引擎里有哪些工具、怎么调用、交付规则是什么”。前者是工作区可变内容，后者是引擎固定内容；这样升级引擎协议时不会覆盖工作区角色。
 
-- context 是持久 user-role 快照，preset 的 `complete` section 不会把它顶掉；
-- roster 是静态的，快照一次后不会每轮重复；
-- 协议需要“始终在”，不依赖 preset 是否保留。
+**内置团队协议**由引擎维护，不从 `team.json` 读。它至少包含：
+
+- 团队工具清单与用途：`team_get_context`、`team_list_inputs`、`team_submit_artifact`、`team_finish`、`team_status`、`team_report_blocked`。
+- 每个工具的调用形状，例如“如果你要提交交付物，调用 `team_submit_artifact({ channelId, text | json | path, summary })`”；“如果你要结束本次 activation，调用 `team_finish({ status, summary })`”。
+- activation 消息的结构：receiver、rule、inputs、outputs、provenance。
+- 规则：只通过 channel 交接，不直接指挥其他 agent；不要修改 `.dsh/.dsh-workspace-team/`；必需输出未提交前不能 finish。
+- 工具校验失败时如何修正重提；卡住时用 `team_report_blocked`。
+
+这份协议是**生成**的：工具清单从当前会话实际安装的 team 工具注册表生成，不手写第二份，启动时校验“协议列出的工具都存在”。否则新增工具或改参数后，提示词会与实现漂移。
+
+为什么角色/协议用 `section`，roster 用 `context`：
+
+- section 按 order 拼接，能保证“工作区角色在前、内置协议在后”的稳定顺序；
+- roster 是静态快照，放在 context 里，preset 的 `complete` section 不会把它顶掉；
+- 协议需要“始终在”，作为 section 紧跟角色，不依赖 preset 是否保留。
+
+`agent.systemPrompt` 是**必填**的，只写角色/领域约束；如果它重复了内置协议里的工具说明，加载器给出 `prompt-duplicates-protocol` 警告，避免两处漂移。
 
 roster 只放**静态名册**，不放运行状态：
 
@@ -408,7 +436,10 @@ roster 只放**静态名册**，不放运行状态：
 [team:bootstrap]
 你已被初始化为“产品交付团队”的 agent: builder（实现者）。
 你的节点：delivery/builder。
-你的入通道：spec, review；出通道：build-report。
+你的接收器：
+- spec-inbox: rule [spec]
+- rework-inbox: rule [review]
+你的出通道：build-report。
 团队名册与协作协议已在系统上下文中。
 
 当前状态：standby。
@@ -426,9 +457,9 @@ roster 只放**静态名册**，不放运行状态：
 
 | 工具 | 作用 |
 |---|---|
-| `team_get_context` | 返回当前 team/agent/node/run、roster、输入要求、输出契约。 |
-| `team_list_inputs` | 列出本次 activation 的输入及 provenance、消费状态。 |
-| `team_submit_artifact` | 提交 text/json/path，返回 artifactId、校验错误、投递数。 |
+| `team_get_context` | 返回当前 team/agent/node/run、roster、receiver/rule、输入要求、输出契约。 |
+| `team_list_inputs` | 列出本次 activation 命中的规则、全部输入及 provenance、消费状态。 |
+| `team_submit_artifact` | 提交 text/json/path；必须同时给 `receiverId` 与 `channelId`，返回 artifactId、校验错误。 |
 | `team_finish` | 声明 succeeded/failed/blocked；校验必需输出；结束 activation。 |
 | `team_status` | 只读查询 pipeline/run/节点状态（受限，不泄露其他 agent 的私密内容）。 |
 | `team_report_blocked` | v1.1：向引擎/用户提问，节点进入 blocked。 |
@@ -516,6 +547,7 @@ stopped → starting → running ⇄ degraded → stopping → stopped
 - 若当前有 running/dispatching activation：标记 `pendingReload`，等图静止后原子切换。
 - 若 agent 集合变化：新增 agent 可在静止点 provision；删除的 agent 不自动杀会话，标记 orphaned；被删节点正在跑的 activation 允许跑完。
 - schema 变化：已提交 artifact 不回溯校验；新提交用新 schema。
+- receiver/rule/channel 变化：只在静止点切换；running 的 activation 继续用旧规则；已消费的输入不回滚。
 
 ### 9.4 崩溃恢复
 
@@ -559,6 +591,7 @@ stopped → starting → running ⇄ degraded → stopping → stopped
     "nodeId": "builder",
     "nodeName": "实现",
     "state": "running",
+    "receiverId": "rework-inbox",
     "iteration": 2,
     "startedAt": "2026-...",
     "inputs": { "total": 2, "ready": 2 },
@@ -590,6 +623,7 @@ stopped → starting → running ⇄ degraded → stopping → stopped
 
 - agent 状态（standby/running/failed）；
 - 当前 pipeline/node/iteration；
+- 命中的 receiver/rule；
 - 输入清单与 provenance（哪个节点给的、什么 channel）；
 - 最近一次交付物；
 - 按钮：暂停/恢复 run、打开团队面板、复制 artifact 路径。
@@ -662,8 +696,8 @@ v1 只做悬浮条 + 一个简单 roster/run 列表。图视图、时间线、ar
 
 **P1：直线流水线**
 
-- eager/lazy provision；bootstrap；系统提示词三段。
-- activation/join/finish；text/json channel；file sink。
+- eager/lazy provision；bootstrap；角色 + 内置团队协议 + roster。
+- receiver/rule 驱动的 activation；text/json channel；file sink。
 - 工具：submit/finish/inputs。
 - 事件日志、run 摘要、基本恢复。
 

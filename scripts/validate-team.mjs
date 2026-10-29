@@ -8,7 +8,7 @@
  *   1. JSON Schema (schema/team.schema.json) with Ajv strict mode.
  *   2. Referenced artifact JSON Schemas compile.
  *   3. Semantic rules that JSON Schema cannot express: references, entry/terminal,
- *      brief channel, same-pipeline channels, SCC boundedness, quorum feasibility,
+ *      brief channel, same-pipeline channels, SCC boundedness, receiver/rule coverage,
  *      path safety, agent reuse warnings.
  *
  * Exit code 0 = valid (warnings allowed), 1 = invalid, 2 = usage/setup error.
@@ -266,6 +266,8 @@ function main() {
   const pipelineById = new Map(pipelines.filter(isObject).map((p) => [p.id, p]));
 
   const agentUsage = new Map();
+  const receiverUse = new Map(); // agentId/receiverId -> pipelineId/nodeId
+  const receiverKey = (agentId, receiverId) => agentId + "/" + receiverId;
   const nodeKey = (pipelineId, nodeId) => pipelineId + "/" + nodeId;
   const pipelineNodes = new Map();
   const pipelineNodeById = new Map();
@@ -306,6 +308,9 @@ function main() {
     const usage = agentUsage.get(agent.id) ?? [];
     if (usage.length === 0) warnings.push("agent " + agent.id + ": not referenced by any node");
     if (usage.length > 1) warnings.push("agent " + agent.id + ": referenced by " + usage.length + " nodes (" + usage.join(", ") + "); activations are serialized per agent");
+
+    const receivers = Array.isArray(agent.receivers) ? agent.receivers : [];
+    uniqueById(receivers, "agent " + agent.id + " receivers", errors);
   }
 
   // 2. Channels + referenced artifact schemas + file sinks
@@ -316,21 +321,21 @@ function main() {
     if (!isObject(channel.from) || !isObject(channel.to)) continue;
 
     const fromNode = channel.from.kind === "node";
-    const toNode = channel.to.kind === "node";
+    const toReceiver = channel.to.kind === "receiver";
 
     if (fromNode) {
       if (!pipelineById.has(channel.from.pipelineId)) errors.push(label + ": unknown from.pipelineId '" + channel.from.pipelineId + "'");
       const pnodes = pipelineNodeById.get(channel.from.pipelineId);
       if (pnodes && !pnodes.has(channel.from.nodeId)) errors.push(label + ": unknown from.nodeId '" + channel.from.nodeId + "'");
     }
-    if (toNode) {
+    if (toReceiver) {
       if (!pipelineById.has(channel.to.pipelineId)) errors.push(label + ": unknown to.pipelineId '" + channel.to.pipelineId + "'");
       const pnodes = pipelineNodeById.get(channel.to.pipelineId);
       if (pnodes && !pnodes.has(channel.to.nodeId)) errors.push(label + ": unknown to.nodeId '" + channel.to.nodeId + "'");
     }
 
-    if (fromNode && toNode && channel.from.pipelineId !== channel.to.pipelineId) {
-      errors.push(label + ": node→node channel crosses pipelines (" + channel.from.pipelineId + " → " + channel.to.pipelineId + "); v1 only allows channels inside one pipeline");
+    if (fromNode && toReceiver && channel.from.pipelineId !== channel.to.pipelineId) {
+      errors.push(label + ": node→receiver channel crosses pipelines (" + channel.from.pipelineId + " → " + channel.to.pipelineId + "); v1 only allows channels inside one pipeline");
     }
     if (channel.from.kind === "external" && channel.to.kind === "external") {
       errors.push(label + ": external → external is not allowed");
@@ -385,6 +390,70 @@ function main() {
     }
   }
 
+  // 2b. Channel targets a receiver; receiver.rule lists exactly those channels.
+  const receiverChannelIds = new Map();
+  for (const channel of channels) {
+    if (!isObject(channel) || !isObject(channel.to) || channel.to.kind !== "receiver") continue;
+    const label = "channel " + channel.id;
+    const pnodes = pipelineNodeById.get(channel.to.pipelineId);
+    const node = pnodes?.get(channel.to.nodeId);
+    if (!node) continue;
+    const agent = agentById.get(node.agentId);
+    if (!agent) continue;
+    const receiver = (Array.isArray(agent.receivers) ? agent.receivers : []).find((r) => isObject(r) && r.id === channel.to.receiverId);
+    if (!receiver) {
+      errors.push(label + ": unknown receiverId '" + channel.to.receiverId + "' on agent " + agent.id + " node " + channel.to.nodeId);
+      continue;
+    }
+    const key = receiverKey(agent.id, receiver.id);
+    const target = nodeKey(channel.to.pipelineId, channel.to.nodeId);
+    const usedBy = receiverUse.get(key);
+    if (usedBy && usedBy !== target) {
+      errors.push("agent " + agent.id + " receiver " + receiver.id + ": referenced by both " + usedBy + " and " + target + "; a receiver can only belong to one node");
+    } else {
+      receiverUse.set(key, target);
+    }
+    if (receiver.enabled === false) {
+      warnings.push(label + ": targets disabled receiver " + key + "; it will never activate");
+    }
+    const rule = Array.isArray(receiver.rule) ? receiver.rule : [];
+    if (!rule.includes(channel.id)) {
+      errors.push(label + ": receiver " + key + " rule " + JSON.stringify(rule) + " does not list channel '" + channel.id + "'");
+    }
+    if (!receiverChannelIds.has(key)) receiverChannelIds.set(key, new Set());
+    receiverChannelIds.get(key).add(channel.id);
+  }
+
+  for (const agent of agents) {
+    if (!isObject(agent) || typeof agent.id !== "string") continue;
+    const receivers = Array.isArray(agent.receivers) ? agent.receivers : [];
+    for (const receiver of receivers) {
+      if (!isObject(receiver) || typeof receiver.id !== "string") continue;
+      const key = receiverKey(agent.id, receiver.id);
+      const rule = Array.isArray(receiver.rule) ? receiver.rule : [];
+      for (const cid of rule) {
+        const channel = channelById.get(cid);
+        if (!channel) {
+          errors.push("agent " + agent.id + " receiver " + receiver.id + " rule: unknown channel '" + cid + "'");
+          continue;
+        }
+        if (channel.to?.kind !== "receiver" || channel.to.receiverId !== receiver.id) {
+          errors.push("agent " + agent.id + " receiver " + receiver.id + " rule: channel '" + cid + "' must target this receiver");
+          continue;
+        }
+        const pnodes = pipelineNodeById.get(channel.to.pipelineId);
+        const targetNode = pnodes?.get(channel.to.nodeId);
+        const targetAgent = targetNode ? agentById.get(targetNode.agentId) : null;
+        if (!targetAgent || targetAgent.id !== agent.id) {
+          errors.push("agent " + agent.id + " receiver " + receiver.id + " rule: channel '" + cid + "' targets node " + channel.to.pipelineId + "/" + channel.to.nodeId + " which does not belong to this agent");
+        }
+      }
+      if (rule.length > 0 && !receiverChannelIds.has(key)) {
+        warnings.push("agent " + agent.id + " receiver " + receiver.id + ": no channel targets it; its rule can never be satisfied");
+      }
+    }
+  }
+
   // 3. Pipeline structure
   for (const pipeline of pipelines) {
     if (!isObject(pipeline) || typeof pipeline.id !== "string") continue;
@@ -400,7 +469,7 @@ function main() {
       if (channel.from.kind === "node" && channel.from.pipelineId === pipeline.id && nodeIds.has(channel.from.nodeId)) {
         outbound.get(channel.from.nodeId).push(channel);
       }
-      if (channel.to.kind === "node" && channel.to.pipelineId === pipeline.id && nodeIds.has(channel.to.nodeId)) {
+      if (channel.to.kind === "receiver" && channel.to.pipelineId === pipeline.id && nodeIds.has(channel.to.nodeId)) {
         inbound.get(channel.to.nodeId).push(channel);
       }
     }
@@ -432,8 +501,8 @@ function main() {
       if (!brief) errors.push("pipeline " + pipeline.id + ": start.briefChannel references unknown channel '" + start.briefChannel + "'");
       else {
         if (brief.from.kind !== "external") errors.push("pipeline " + pipeline.id + ": start.briefChannel '" + start.briefChannel + "' must have from.kind=external");
-        if (brief.to.kind !== "node" || brief.to.pipelineId !== pipeline.id) {
-          errors.push("pipeline " + pipeline.id + ": start.briefChannel '" + start.briefChannel + "' must target a node in this pipeline");
+        if (brief.to.kind !== "receiver" || brief.to.pipelineId !== pipeline.id) {
+          errors.push("pipeline " + pipeline.id + ": start.briefChannel '" + start.briefChannel + "' must target a receiver in this pipeline");
         } else if (!entryNodes.includes(brief.to.nodeId)) {
           errors.push("pipeline " + pipeline.id + ": brief channel targets '" + brief.to.nodeId + "', which is not an entry node");
         }
@@ -442,26 +511,10 @@ function main() {
       warnings.push("pipeline " + pipeline.id + ": start.mode=auto without start.briefChannel; entry agents receive no user brief");
     }
 
-    // quorum feasibility
     for (const node of nodes) {
       if (!isObject(node) || typeof node.id !== "string") continue;
-      const requiredInbound = inbound.get(node.id).filter((c) => c.delivery?.required !== false).length;
-      const inputs = isObject(node.inputs) ? node.inputs : {};
-      if (inputs.mode === "quorum") {
-        if (requiredInbound === 0) errors.push("pipeline " + pipeline.id + " node " + node.id + ": quorum with no required inbound channels can never activate");
-        else if (inputs.quorum > requiredInbound) errors.push("pipeline " + pipeline.id + " node " + node.id + ": quorum " + inputs.quorum + " > required inbound channels " + requiredInbound);
-      }
-      if (inbound.get(node.id).length === 0 && !entryNodes.includes(node.id)) {
+      if ((inbound.get(node.id) ?? []).length === 0 && !entryNodes.includes(node.id)) {
         warnings.push("pipeline " + pipeline.id + " node " + node.id + ": no inbound channels and not an entry node; unreachable");
-      }
-      for (const channel of inbound.get(node.id)) {
-        if (channel.delivery?.timing === "immediate" && inputs.mode === "all") {
-          warnings.push("pipeline " + pipeline.id + " node " + node.id + ": immediate delivery on channel " + channel.id + " with inputs.mode=all can bypass join semantics");
-        }
-      }
-      const maxInline = node.inputs?.maxInlineBytes;
-      if (maxInline !== undefined && team.settings?.storage?.maxInlineBytes !== undefined && maxInline > team.settings.storage.maxInlineBytes) {
-        warnings.push("pipeline " + pipeline.id + " node " + node.id + ": maxInlineBytes exceeds settings.storage.maxInlineBytes");
       }
     }
 
@@ -480,7 +533,7 @@ function main() {
     for (const node of nodeIds) edges.set(node, []);
     for (const node of nodeIds) {
       for (const channel of outbound.get(node)) {
-        if (channel.to.kind === "node" && channel.to.pipelineId === pipeline.id) edges.get(node).push(channel.to.nodeId);
+        if (channel.to.kind === "receiver" && channel.to.pipelineId === pipeline.id) edges.get(node).push(channel.to.nodeId);
       }
     }
     const reachable = new Set();
@@ -519,10 +572,22 @@ function main() {
     for (const channel of channels) {
       if (!isObject(channel) || !isObject(channel.from) || !isObject(channel.to)) continue;
       if (channel.from.kind !== "node" || channel.from.pipelineId !== pipeline.id) continue;
-      if (channel.to.kind !== "node" || channel.to.pipelineId !== pipeline.id) continue;
+      if (channel.to.kind !== "receiver" || channel.to.pipelineId !== pipeline.id) continue;
       const key = channel.from.nodeId + "→" + channel.to.nodeId;
       if (pairs.has(key)) warnings.push("pipeline " + pipeline.id + ": multiple channels between " + key + " (" + pairs.get(key) + ", " + channel.id + "); make sure the consumer can distinguish them");
       else pairs.set(key, channel.id);
+    }
+  }
+
+  // unused receivers
+  for (const agent of agents) {
+    if (!isObject(agent) || typeof agent.id !== "string") continue;
+    const receivers = Array.isArray(agent.receivers) ? agent.receivers : [];
+    for (const receiver of receivers) {
+      if (!isObject(receiver) || typeof receiver.id !== "string") continue;
+      if (!receiverUse.has(receiverKey(agent.id, receiver.id))) {
+        warnings.push("agent " + agent.id + " receiver " + receiver.id + ": not targeted by any channel");
+      }
     }
   }
 
