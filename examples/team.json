@@ -21,7 +21,15 @@
     "session": {
       "titleTemplate": "{{team.name}} / {{agent.name}}"
     },
-    "humanChat": "allow"
+    "humanInteraction": {
+      "workerComposer": "blocked",
+      "suggestionDelivery": "queue",
+      "suggestionTtlMs": 3600000,
+      "questionTimeoutMs": 1800000,
+      "onQuestionTimeout": "cancel",
+      "maxPendingQuestionsPerAgent": 1,
+      "maxPendingSuggestionsPerAgent": 8
+    }
   },
   "agents": [
     {

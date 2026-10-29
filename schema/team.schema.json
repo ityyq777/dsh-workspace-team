@@ -183,7 +183,6 @@
         "id",
         "name",
         "role",
-        "preset",
         "systemPrompt"
       ],
       "properties": {
@@ -200,13 +199,24 @@
           "minLength": 1,
           "maxLength": 200
         },
+        "team_role": {
+          "enum": [
+            "master",
+            "slave"
+          ],
+          "default": "slave",
+          "description": "团队角色。slave=普通成员，由用户配置；master=团队主 Agent，由引擎初始化时自动生成/补齐，用户不得手写。有效配置中恰好一个 master，它不得被任何 pipeline node 引用，也不得定义 receivers。master 仍是普通 DSH 会话，只表示团队角色。"
+        },
         "description": {
           "type": "string",
           "maxLength": 2000
         },
         "preset": {
-          "const": "standard",
-          "description": "固定为 standard，不可选择；保留该字段是为了在 team.json 中记录每个 agent 使用的 DSH agent preset，便于审计与恢复。"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "default": "standard",
+          "description": "可选 DSH agent preset 名称，缺省 standard；可为任意已安装 preset，团队工具与提示词叠加其上。"
         },
         "permission": {
           "type": "string",
@@ -278,6 +288,7 @@
     "settings": {
       "type": "object",
       "additionalProperties": false,
+      "description": "工作区团队的运行参数。主 Agent 由引擎自动生成（team_role=master），不需要在 agents 中配置；humanInteraction 只控制建议与提问策略，不控制会话输入权限。",
       "properties": {
         "engine": {
           "$ref": "#/$defs/engineSettings"
@@ -288,14 +299,113 @@
         "session": {
           "$ref": "#/$defs/sessionSettings"
         },
-        "humanChat": {
+        "masterAgent": {
+          "$ref": "#/$defs/masterAgent"
+        },
+        "humanInteraction": {
+          "$ref": "#/$defs/humanInteraction"
+        }
+      }
+    },
+    "masterAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "引擎生成的主 Agent 模板。全部字段可选；缺省使用内置默认值。生成的 master 不写回用户的 team.json，只进入运行时有效配置和 state/master.json。",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id",
+          "default": "team-master",
+          "description": "生成的主 Agent id。不得与任何用户配置的 agent id 冲突；不得被任何 pipeline node 引用。"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "default": "团队主 Agent"
+        },
+        "preset": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "default": "standard",
+          "description": "主 Agent 会话的 DSH agent preset 名称；缺省 standard。团队工具与提示词叠加其上，未知 preset 使 provision 失败。"
+        },
+        "permission": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "default": "read-only",
+          "description": "主 Agent 会话的 permission preset；默认只读，因为它只做转述、解释和代办，不执行节点。"
+        },
+        "model": {
+          "$ref": "#/$defs/model"
+        },
+        "systemPrompt": {
+          "$ref": "#/$defs/textSource",
+          "description": "可选的主 Agent 额外角色提示词；缺省使用引擎内置主 Agent 协议。引擎仍会追加团队 roster、建议与提问工具说明。"
+        },
+        "session": {
+          "$ref": "#/$defs/agentSession"
+        }
+      }
+    },
+    "humanInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "人工交互策略。团队主 Agent 由引擎自动生成（team_role=master），是推荐前台；用户也可直接与 worker 对话，但 Web UI 默认用 composer block 禁用绑定 worker 的输入框。本配置控制建议/提问策略与 Web UI 输入框展示，Host 不拦截会话输入。",
+      "properties": {
+        "workerComposer": {
           "enum": [
-            "allow",
-            "deny",
+            "blocked",
+            "open"
+          ],
+          "default": "blocked",
+          "description": "Web UI 对绑定 worker 会话输入框的处理。blocked=客户端通过 ctx.conversation.blocks 将 composer 置为 inert；open=保持可输入。只影响 Web UI，Host 不拦截 session.prompt。"
+        },
+        "suggestionDelivery": {
+          "enum": [
+            "queue",
             "steer"
           ],
-          "default": "allow",
-          "description": "allow=用户可直接与绑定会话对话；deny=禁止输入；steer=用户消息作为 steer 注入当前 activation。"
+          "default": "queue",
+          "description": "用户建议的默认投递方式。queue=随该 agent 下一次 activation 一起交付；steer=仅当该 agent 正在执行 activation 时作为 steer 注入，否则降级为 queue。"
+        },
+        "suggestionTtlMs": {
+          "type": "integer",
+          "minimum": 60000,
+          "maximum": 604800000,
+          "default": 3600000,
+          "description": "建议在投递前的存活时间；超时标记 expired，不再注入，并向主 Agent 回报。"
+        },
+        "questionTimeoutMs": {
+          "type": "integer",
+          "minimum": 60000,
+          "maximum": 604800000,
+          "default": 1800000,
+          "description": "worker 通过 team_ask_user 发起的问题等待上限。"
+        },
+        "onQuestionTimeout": {
+          "enum": [
+            "cancel",
+            "notify",
+            "fail-activation"
+          ],
+          "default": "cancel",
+          "description": "提问超时后的动作。cancel=问题过期并让 worker 收到超时通知后继续；notify=只提醒主 Agent，问题保留；fail-activation=当前 activation 判失败。"
+        },
+        "maxPendingQuestionsPerAgent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "default": 1,
+          "description": "单个 agent 同时处于 pending 的提问上限；达到上限后 team_ask_user 返回错误。"
+        },
+        "maxPendingSuggestionsPerAgent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 8,
+          "description": "单个 agent 同时未投递的建议上限；达到上限后 team_send_suggestion 返回错误。"
         }
       }
     },
