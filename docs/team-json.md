@@ -104,13 +104,12 @@
   "name": "分析师",
   "role": "需求分析与规格撰写",
   "description": "可选",
-  "preset": "local/team-analyst",
+  "preset": "standard",
   "permission": "workspace-write",
   "model": { "provider": "deepseek", "model": "deepseek-chat", "reasoningEffort": "high" },
   "systemPrompt": { "file": "prompts/analyst.md" },
   "session": { "title": "{{team.name}} / {{agent.name}}" },
-  "bootstrap": { "mode": "wake", "message": "可选补充说明" },
-  "tags": ["需求"]
+  "bootstrap": { "mode": "wake", "message": "可选补充说明" }
 }
 ```
 
@@ -120,20 +119,21 @@
 | `name`              | string                 | 是   | —                | 展示名；同名不禁止，但 id 必须唯一。                                                                                                                                 |
 | `role`              | string                 | 是   | —                | 一句话角色，进入 roster。                                                                                                                                            |
 | `description`       | string                 | 否   | —                | 更长的职责说明，进入 roster。                                                                                                                                        |
-| `preset`            | string                 | 否   | 部署默认          | DSH agent preset id。preset 决定工具集、基础系统提示词、默认权限。                                                                                                   |
-| `permission`        | string                 | 否   | preset 的权限     | DSH 会话 permission preset 的**名称**（如 `read-only` / `workspace-write` / `danger-full-access`，也可由部署自定义）。preset 解析为 sandbox + approval。 |
+| `preset`            | string                 | 是   | —                | 固定为 `standard`，不提供选择。字段记录该 agent 使用的 DSH agent preset，便于审计与恢复；schema 用 `const` 强制。 |
+| `permission`        | string                 | 否   | 部署默认          | DSH 会话 permission preset 的**名称**（如 `read-only` / `workspace-write` / `danger-full-access`，也可由部署自定义）。preset 解析为 sandbox + approval。 |
 | `model`             | object                 | 否   | 会话默认          | `model` 必填；`provider`、`reasoningEffort` 可选。                                                                                                             |
 | `systemPrompt`      | textSource             | 否   | 空                | agent 的角色提示词；文件相对配置目录。                                                                                                                               |
 | `session.title`     | string                 | 否   | settings 里的模板 | 该 agent 的会话标题覆盖；每个 agent 恰好一个会话。                                                                                                                   |
 | `bootstrap.mode`    | `wake` \| `silent` | 否   | `wake`          | wake：初始化时发 standby 消息并让 agent 回 READY；silent：只写系统提示词，不产生回合。                                                                               |
 | `bootstrap.message` | string                 | 否   | —                | 追加到默认 standby 消息之后。                                                                                                                                        |
-| `tags`              | string[]               | 否   | —                | 仅展示/筛选。                                                                                                                                                        |
 
-**textSource**：`{ "inline": "..." }` 或 `{ "file": "prompts/x.md" }`，二选一。
+- **textSource**：`{ "inline": "..." }` 或 `{ "file": "prompts/x.md" }`，二选一。
 
-**一个 agent 一个会话**：agent 与真实 DSH 会话是 1:1，不提供 per-run 会话。agent 被多个 node 复用时，复用的仍是同一个会话（因而上下文延续），激活按 per-agent FIFO 串行。若需要运行隔离，请定义独立 agent，而不是给同一 agent 开多个会话。
+- **一个 agent 一个会话**：agent 与真实 DSH 会话是 1:1，不提供 per-run 会话。agent 被多个 node 复用时，复用的仍是同一个会话（因而上下文延续），激活按 per-agent FIFO 串行。若需要运行隔离，请定义独立 agent，而不是给同一 agent 开多个会话。
 
-**permission 是 preset 名，不是 sandbox 枚举**：DSH 的会话权限由部署的 permission preset 表定义，每个 preset 解析为 `{ sandbox, approval }`。team.json 只引用 preset 名称，不复制 sandbox/approval 组合；本部署常见名称是 `read-only` / `workspace-write` / `danger-full-access`，但 profile 可以增加自定义 preset。`auto` 仅在部署启用 Auto 集成时可用；`custom` 是派生状态，不能作为配置值。加载器在 Host 内用 `permissionPresets` catalog 解析，未知名称拒绝 provision，不静默降级。
+- **preset 固定为 `standard`，不提供选择**：每个 agent 必须写 `"preset": "standard"`，schema 用 `const` 强制；引擎创建会话时始终使用它。字段保留在 team.json 里，是为了让配置自描述、可审计、可恢复，而不是让用户挑 preset。DSH 的 agent preset 仍然决定工具集、基础 persona/系统提示词和技能，但团队只使用 `standard` 这一种；团队自己的角色提示词和工具是叠加在它之上。agent preset 与 `permission`（permission preset）是两套独立机制：前者决定“加载什么”，后者决定“沙箱与审批”。
+
+- **permission 是 preset 名，不是 sandbox 枚举**：DSH 的会话权限由部署的 permission preset 表定义，每个 preset 解析为 `{ sandbox, approval }`。team.json 只引用 preset 名称，不复制 sandbox/approval 组合；本部署常见名称是 `read-only` / `workspace-write` / `danger-full-access`，但 profile 可以增加自定义 preset。`auto` 仅在部署启用 Auto 集成时可用；`custom` 是派生状态，不能作为配置值。加载器在 Host 内用 `permissionPresets` catalog 解析，未知名称拒绝 provision，不静默降级。
 
 ## 5. channels
 
@@ -371,6 +371,7 @@ JSON Schema 只能保证结构。加载器还必须做以下检查；标 **(erro
 
 | 配置                                 | 运行时行为                                                                   |
 | ------------------------------------ | ---------------------------------------------------------------------------- |
+| `agent.preset`                     | `session.create` 时固定作为 `agentPreset` 传入；schema 的 `const` 已限制为 `standard`。 |
 | `agent.permission`                 | 创建会话后按 Host 的 permission preset 切换；未知 preset 使 provision 失败。 |
 | `channel.acceptance`               | `team_submit_artifact` 时校验；失败返回校验错误，不入库、不投递。          |
 | `channel.when`                     | 合格交付物入库后评估；false 记为 filtered，不投递。                          |

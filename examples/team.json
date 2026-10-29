@@ -29,39 +29,32 @@
       "name": "分析师",
       "role": "需求分析与规格撰写",
       "description": "把用户简报转成可验收的需求规格，不写实现。",
-      "preset": "local/team-analyst",
+      "preset": "standard",
       "permission": "workspace-write",
       "systemPrompt": {
         "file": "prompts/analyst.md"
       },
       "bootstrap": {
         "mode": "wake"
-      },
-      "tags": [
-        "需求",
-        "规格"
-      ]
+      }
     },
     {
       "id": "builder",
       "name": "实现者",
       "role": "按规格实现并自测",
       "description": "在 workspace 中完成代码改动，输出实现报告。",
-      "preset": "local/team-builder",
+      "preset": "standard",
       "permission": "workspace-write",
       "systemPrompt": {
         "inline": "你是产品交付团队的实现者。你只在收到 activation 后工作；你通过 channel 交接，不直接指挥其他 agent。改代码前先确认输入 artifact 的来源与验收标准；完成后必须提交 build-report 并调用 team_finish。不要修改 .dsh/.dsh-workspace-team/ 下的配置与状态文件。"
-      },
-      "tags": [
-        "实现"
-      ]
+      }
     },
     {
       "id": "reviewer",
       "name": "评审者",
       "role": "代码与交付质量评审",
       "description": "只读评审；通过时输出面向用户的最终说明，打回时给出可执行的修改意见。",
-      "preset": "local/team-reviewer",
+      "preset": "standard",
       "permission": "read-only",
       "model": {
         "provider": "deepseek",
@@ -70,26 +63,18 @@
       },
       "systemPrompt": {
         "inline": "你是产品交付团队的评审者，只读，不改代码。你依据 spec 的 acceptanceCriteria 与 build-report 做判断。通过时把最终说明提交到 publish 通道；打回时把结构化意见提交到 review 通道。两类交付物互斥。完成后调用 team_finish。"
-      },
-      "tags": [
-        "评审",
-        "质量"
-      ]
+      }
     },
     {
       "id": "auditor",
       "name": "审计员",
       "role": "依赖、配置与敏感信息审计",
       "description": "独立审计流水线，不参与交付闭环。",
-      "preset": "local/team-auditor",
+      "preset": "standard",
       "permission": "read-only",
       "systemPrompt": {
         "inline": "你是产品交付团队的审计员。检查工作区的依赖、配置、密钥与敏感信息风险，输出可执行的 Markdown 审计报告。只读，不修改工作区文件（提交 artifact 由团队工具完成）。"
-      },
-      "tags": [
-        "审计",
-        "安全"
-      ]
+      }
     }
   ],
   "channels": [

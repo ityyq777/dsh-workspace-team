@@ -182,7 +182,8 @@
       "required": [
         "id",
         "name",
-        "role"
+        "role",
+        "preset"
       ],
       "properties": {
         "id": {
@@ -203,16 +204,14 @@
           "maxLength": 2000
         },
         "preset": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200,
-          "description": "DSH agent preset id；缺省用部署默认 preset。"
+          "const": "standard",
+          "description": "固定为 standard，不可选择；保留该字段是为了在 team.json 中记录每个 agent 使用的 DSH agent preset，便于审计与恢复。"
         },
         "permission": {
           "type": "string",
           "minLength": 1,
           "maxLength": 80,
-          "description": "DSH 会话 permission preset 名称，例如本部署的 read-only / workspace-write / danger-full-access；preset 由部署解析为 sandbox + approval。缺省继承 agent preset。"
+          "description": "DSH 会话 permission preset 名称，例如本部署的 read-only / workspace-write / danger-full-access；preset 由部署解析为 sandbox + approval。缺省用部署默认 permission preset。"
         },
         "model": {
           "$ref": "#/$defs/model"
@@ -225,16 +224,6 @@
         },
         "bootstrap": {
           "$ref": "#/$defs/bootstrap"
-        },
-        "tags": {
-          "type": "array",
-          "maxItems": 16,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 40
-          }
         }
       }
     },

@@ -56,7 +56,7 @@ node scripts/validate-team.mjs examples/team.json
 - **验收与路由分离**：`acceptance` 决定交付物合不合格；`when` 决定合格后要不要触发下游。
 - **有环必须有界**：SCC 上至少一个节点有有限 `maxActivations`，或 pipeline 有有限预算；否则加载失败。
 - **一个 agent 一个会话**：agent ↔ session 1:1，无 per-run 模式；绑定写账本，重启对账；一个 agent 可被多个 node 复用但串行执行。
-- **权限跟随 DSH preset**：`agent.permission` 是 DSH 会话 permission preset 的名称，由部署解析为 sandbox + approval，不在 team.json 里硬编码三值枚举。
+- **agent preset 固定 standard**：团队不提供 preset 选择，每个 agent 在 team.json 里记录 `"preset": "standard"`（schema `const` 强制）；`agent.permission` 仍是 permission preset 名称（sandbox + approval），两者独立。
 - **activation 带 provenance**：agent 明确知道每份输入来自哪个 pipeline/node/agent/channel。
 - **系统提示词稳定**：persona/roster/protocol 固定；node instructions 与输入只出现在 activation 消息里。
 - **面板不污染会话日志**：绑定信息走 Host HTTP 路由，客户端按 sessionId 轮询。

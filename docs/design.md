@@ -325,7 +325,7 @@ unbound / standby / failed ──release──► released
 ```
 
 - `unbound`：配置存在，会话尚未创建。
-- `provisioning`：创建会话、应用 agent preset / permission preset / 模型、写系统提示词、装工具、发 bootstrap。
+- `provisioning`：创建会话、固定使用 `standard` agent preset、应用 permission preset / 模型、写系统提示词、装工具、发 bootstrap。
 - `standby`：会话就绪，等待 activation；可接受用户对话。
 - `running`：正在执行一个 activation。
 - `failed`：provisioning 失败或会话丢失。
@@ -338,7 +338,7 @@ unbound / standby / failed ──release──► released
 使用 Host 的 typert gateway 创建真实会话（与 squads 相同的手法）：
 
 ```text
-session.create({ workspaceId, agentPreset? }) → sessionId
+session.create({ workspaceId, agentPreset: "standard" }) → sessionId
 session.rename(sessionId, title)
 session.selectModel(sessionId, provider/model)
 commands.execute(agent, "/permission " + permission)   # permission 是 preset 名称
@@ -346,9 +346,11 @@ commands.execute(agent, "/permission " + permission)   # permission 是 preset �
 
 **一个 agent 恰好一个会话**。不为单次 run 新建会话，也不存在 `per-run` 模式；agent 被多个 node 复用时复用同一个会话，激活按 per-agent FIFO 串行。需要运行隔离时定义独立 agent，而不是给同一 agent 开多个会话。
 
-**权限用 DSH 的 permission preset**。`agent.permission` 是 preset 名称，不是 sandbox 三值枚举。引擎从 Host 的 `permissionPresets` catalog 解析；未知名称使 provision 失败（`TEAM_PERMISSION_UNKNOWN`），不静默回退。缺省不写时继承 agent preset / 部署默认。`auto` 取决于部署是否启用 Auto 集成，`custom` 是派生状态，不可配置。
+**agent preset 固定为 `standard`，不提供选择**。team.json 的每个 agent 必须记录 `"preset": "standard"`，schema 用 `const` 固定；引擎创建会话时始终传这个值。保留字段是为了让配置自描述、可审计、可恢复，不是让用户挑 preset。团队自己的提示词和工具是**叠加**在 `standard` 之上，不替代它。
 
-配置只在 provision 时应用；用户之后在会话里切换 preset 属于 DSH 正常操作。引擎记录实际 preset 并在诊断里标 `permission-drift`，不每轮强制回滚。
+**权限用 DSH 的 permission preset**。`agent.permission` 是 preset 名称，不是 sandbox 三值枚举；它与 `standard` agent preset 是两套独立机制：`standard` 决定“加载什么”，permission preset 决定“沙箱与审批”。引擎从 Host 的 `permissionPresets` catalog 解析；未知名称使 provision 失败（`TEAM_PERMISSION_UNKNOWN`），不静默回退。缺省不写时用部署默认 permission preset。`auto` 取决于部署是否启用 Auto 集成，`custom` 是派生状态，不可配置。
+
+配置只在 provision 时应用；用户之后在会话里切换 permission preset 属于 DSH 正常操作。引擎记录实际 preset 并在诊断里标 `permission-drift`，不每轮强制回滚。
 
 然后：
 
