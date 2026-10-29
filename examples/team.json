@@ -1,0 +1,432 @@
+{
+  "$schema": "../schema/team.schema.json",
+  "schemaVersion": 1,
+  "id": "product-delivery",
+  "name": "产品交付团队",
+  "description": "一个需求分析 → 实现 → 评审的最小闭环，带评审打回的有环反馈；另有独立审计流水线。",
+  "settings": {
+    "engine": {
+      "provisioning": "eager",
+      "maxConcurrentActivations": 3,
+      "defaultNodeTimeoutMs": 1800000,
+      "idleGraceMs": 60000,
+      "resumeInterrupted": "mark-failed"
+    },
+    "storage": {
+      "maxArtifactBytes": 262144,
+      "maxInlineBytes": 32768,
+      "retainRuns": 50,
+      "retainDays": 30
+    },
+    "session": {
+      "titleTemplate": "{{team.name}} / {{agent.name}}"
+    },
+    "humanChat": "allow"
+  },
+  "agents": [
+    {
+      "id": "analyst",
+      "name": "分析师",
+      "role": "需求分析与规格撰写",
+      "description": "把用户简报转成可验收的需求规格，不写实现。",
+      "preset": "local/team-analyst",
+      "permission": "workspace-write",
+      "systemPrompt": {
+        "file": "prompts/analyst.md"
+      },
+      "bootstrap": {
+        "mode": "wake"
+      },
+      "tags": [
+        "需求",
+        "规格"
+      ]
+    },
+    {
+      "id": "builder",
+      "name": "实现者",
+      "role": "按规格实现并自测",
+      "description": "在 workspace 中完成代码改动，输出实现报告。",
+      "preset": "local/team-builder",
+      "permission": "workspace-write",
+      "systemPrompt": {
+        "inline": "你是产品交付团队的实现者。你只在收到 activation 后工作；你通过 channel 交接，不直接指挥其他 agent。改代码前先确认输入 artifact 的来源与验收标准；完成后必须提交 build-report 并调用 team_finish。不要修改 .dsh/.dsh-workspace-team/ 下的配置与状态文件。"
+      },
+      "tags": [
+        "实现"
+      ]
+    },
+    {
+      "id": "reviewer",
+      "name": "评审者",
+      "role": "代码与交付质量评审",
+      "description": "只读评审；通过时输出面向用户的最终说明，打回时给出可执行的修改意见。",
+      "preset": "local/team-reviewer",
+      "permission": "read-only",
+      "model": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "reasoningEffort": "high"
+      },
+      "systemPrompt": {
+        "inline": "你是产品交付团队的评审者，只读，不改代码。你依据 spec 的 acceptanceCriteria 与 build-report 做判断。通过时把最终说明提交到 publish 通道；打回时把结构化意见提交到 review 通道。两类交付物互斥。完成后调用 team_finish。"
+      },
+      "tags": [
+        "评审",
+        "质量"
+      ]
+    },
+    {
+      "id": "auditor",
+      "name": "审计员",
+      "role": "依赖、配置与敏感信息审计",
+      "description": "独立审计流水线，不参与交付闭环。",
+      "preset": "local/team-auditor",
+      "permission": "read-only",
+      "systemPrompt": {
+        "inline": "你是产品交付团队的审计员。检查工作区的依赖、配置、密钥与敏感信息风险，输出可执行的 Markdown 审计报告。只读，不修改工作区文件（提交 artifact 由团队工具完成）。"
+      },
+      "tags": [
+        "审计",
+        "安全"
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "id": "brief",
+      "name": "启动简报",
+      "description": "用户启动 delivery 流水线时注入的原始需求。",
+      "from": {
+        "kind": "external",
+        "source": "user"
+      },
+      "to": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "analyst"
+      },
+      "artifact": {
+        "kind": "text",
+        "maxBytes": 32768
+      },
+      "required": false,
+      "delivery": {
+        "required": true,
+        "timing": "on-activate",
+        "inline": "always"
+      }
+    },
+    {
+      "id": "spec",
+      "name": "需求规格",
+      "description": "分析师产出的结构化规格，是实现节点的唯一入口。",
+      "from": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "analyst"
+      },
+      "to": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "builder"
+      },
+      "artifact": {
+        "kind": "json",
+        "schema": "schemas/spec.schema.json",
+        "schemaDialect": "2020-12",
+        "maxBytes": 131072
+      },
+      "required": true,
+      "acceptance": [
+        {
+          "pointer": "/acceptanceCriteria",
+          "op": "min-length",
+          "length": 1
+        }
+      ],
+      "delivery": {
+        "required": true,
+        "timing": "on-activate",
+        "inline": "auto"
+      }
+    },
+    {
+      "id": "build-report",
+      "name": "实现报告",
+      "description": "实现者提交的改动、测试结果与产物清单。",
+      "from": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "builder"
+      },
+      "to": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "reviewer"
+      },
+      "artifact": {
+        "kind": "json",
+        "schema": "schemas/build-report.schema.json",
+        "maxBytes": 131072
+      },
+      "required": true,
+      "delivery": {
+        "required": true,
+        "timing": "on-activate",
+        "inline": "auto"
+      }
+    },
+    {
+      "id": "review",
+      "name": "评审意见（打回）",
+      "description": "仅当评审结论为 changes_requested 时触发实现者返工，形成有界反馈环。",
+      "from": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "reviewer"
+      },
+      "to": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "builder"
+      },
+      "artifact": {
+        "kind": "json",
+        "schema": "schemas/review.schema.json",
+        "maxBytes": 65536
+      },
+      "required": false,
+      "when": [
+        {
+          "pointer": "/status",
+          "op": "eq",
+          "value": "changes_requested"
+        }
+      ],
+      "delivery": {
+        "required": true,
+        "timing": "on-activate",
+        "inline": "auto"
+      },
+      "retention": {
+        "keepLast": 5
+      }
+    },
+    {
+      "id": "publish",
+      "name": "最终交付说明",
+      "description": "评审通过后写给用户的 Markdown 总结，直接落到 workspace。",
+      "from": {
+        "kind": "node",
+        "pipelineId": "delivery",
+        "nodeId": "reviewer"
+      },
+      "to": {
+        "kind": "external",
+        "sink": "file",
+        "path": "docs/final-report.md",
+        "overwrite": true
+      },
+      "artifact": {
+        "kind": "text",
+        "mimeType": "text/markdown",
+        "minBytes": 200,
+        "maxBytes": 131072
+      },
+      "required": false,
+      "acceptance": [
+        {
+          "pointer": "",
+          "op": "min-length",
+          "length": 200
+        }
+      ],
+      "delivery": {
+        "required": false,
+        "inline": "path"
+      },
+      "retention": {
+        "keepLast": 20
+      }
+    },
+    {
+      "id": "audit-report",
+      "name": "审计报告",
+      "description": "独立审计流水线的 Markdown 报告。",
+      "from": {
+        "kind": "node",
+        "pipelineId": "audit",
+        "nodeId": "auditor"
+      },
+      "to": {
+        "kind": "external",
+        "sink": "file",
+        "path": "docs/audit.md",
+        "overwrite": true
+      },
+      "artifact": {
+        "kind": "text",
+        "mimeType": "text/markdown",
+        "minBytes": 200,
+        "maxBytes": 131072
+      },
+      "required": false,
+      "acceptance": [
+        {
+          "pointer": "",
+          "op": "min-length",
+          "length": 200
+        }
+      ],
+      "delivery": {
+        "required": false,
+        "inline": "path"
+      }
+    }
+  ],
+  "pipelines": [
+    {
+      "id": "delivery",
+      "name": "需求交付",
+      "description": "分析 → 实现 → 评审；评审打回则回到实现，最多 4 轮。",
+      "enabled": true,
+      "start": {
+        "mode": "manual",
+        "entryNodes": [
+          "analyst"
+        ],
+        "briefChannel": "brief"
+      },
+      "nodes": [
+        {
+          "id": "analyst",
+          "name": "需求分析",
+          "agentId": "analyst",
+          "instructions": {
+            "inline": "读取 activation 消息中 brief 通道的启动简报，产出结构化需求规格。\n\n要求：\n1. 覆盖目标、范围、验收标准与风险；验收标准必须可验证。\n2. 调用 team_submit_artifact，channelId=\"spec\"，json 参数传对象；内容必须符合 schemas/spec.schema.json。\n3. 提交被接受后调用 team_finish(status=\"succeeded\", summary=\"...\")。\n4. 聊天消息只做简短说明，不要把完整规格贴进聊天。"
+          },
+          "activation": {
+            "maxActivations": 1
+          },
+          "timeoutMs": 900000,
+          "position": {
+            "x": 0,
+            "y": 120
+          }
+        },
+        {
+          "id": "builder",
+          "name": "实现",
+          "agentId": "builder",
+          "instructions": {
+            "inline": "输入可能来自 spec（首次实现）或 review（评审打回），activation 消息会标明来源、artifact id 与 producer 节点。\n\n要求：\n1. 若输入是 review，逐条处理 comments；若输入是 spec，按 acceptanceCriteria 实现。\n2. 在工作区完成改动并运行必要测试。\n3. 调用 team_submit_artifact，channelId=\"build-report\"，提交 JSON：summary/changes/tests/artifacts。\n4. 提交被接受后调用 team_finish(status=\"succeeded\", summary=\"...\")。\n5. 不要修改 .dsh/.dsh-workspace-team/ 下的配置与状态文件。"
+          },
+          "inputs": {
+            "mode": "any"
+          },
+          "activation": {
+            "maxActivations": 4,
+            "retry": {
+              "maxAttempts": 2,
+              "backoffMs": 5000
+            },
+            "onFailure": "retry"
+          },
+          "timeoutMs": 1800000,
+          "position": {
+            "x": 280,
+            "y": 120
+          }
+        },
+        {
+          "id": "reviewer",
+          "name": "评审",
+          "agentId": "reviewer",
+          "instructions": {
+            "inline": "阅读 build-report 与工作区改动，依据 spec 的 acceptanceCriteria 判断。\n\n通过：\n- 把面向用户的最终说明（Markdown，至少 200 字）提交到 publish 通道（text）。\n- 调用 team_finish(status=\"succeeded\")；不要提交 review。\n\n打回：\n- 提交 review 通道（JSON，status=\"changes_requested\"，comments 至少一条可执行意见）。\n- 调用 team_finish(status=\"succeeded\")；不要提交 publish。\n\n你只评审，不修改代码。"
+          },
+          "activation": {
+            "maxActivations": 4
+          },
+          "timeoutMs": 900000,
+          "position": {
+            "x": 560,
+            "y": 120
+          }
+        }
+      ],
+      "completion": {
+        "mode": "all-terminal",
+        "terminalNodes": [
+          "reviewer"
+        ]
+      },
+      "budget": {
+        "maxNodeRuns": 20,
+        "maxWallClockMs": 7200000,
+        "maxArtifacts": 40
+      },
+      "layout": {
+        "analyst": {
+          "x": 0,
+          "y": 120
+        },
+        "builder": {
+          "x": 280,
+          "y": 120
+        },
+        "reviewer": {
+          "x": 560,
+          "y": 120
+        }
+      }
+    },
+    {
+      "id": "audit",
+      "name": "安全审计",
+      "description": "独立单节点流水线，按需运行。",
+      "enabled": true,
+      "start": {
+        "mode": "manual",
+        "entryNodes": [
+          "auditor"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "auditor",
+          "name": "工作区审计",
+          "agentId": "auditor",
+          "instructions": {
+            "inline": "审计当前工作区的依赖、配置、密钥与敏感信息风险。\n\n要求：\n1. 输出 Markdown 审计报告，至少 200 字，包含风险等级与修复建议。\n2. 调用 team_submit_artifact，channelId=\"audit-report\"，text 参数传报告全文。\n3. 提交被接受后调用 team_finish(status=\"succeeded\")。"
+          },
+          "activation": {
+            "maxActivations": 1
+          },
+          "timeoutMs": 900000,
+          "position": {
+            "x": 0,
+            "y": 80
+          }
+        }
+      ],
+      "completion": {
+        "mode": "all-terminal",
+        "terminalNodes": [
+          "auditor"
+        ]
+      },
+      "budget": {
+        "maxNodeRuns": 5,
+        "maxWallClockMs": 1800000
+      },
+      "layout": {
+        "auditor": {
+          "x": 0,
+          "y": 80
+        }
+      }
+    }
+  ]
+}

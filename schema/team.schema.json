@@ -1,0 +1,1074 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh.local/schemas/workspace-team/team.schema.json",
+  "title": "DSH Workspace Team",
+  "description": "工作区级团队声明。一个工作区最多一个团队，文件位于 <workspace>/.dsh/.dsh-workspace-team/team.json。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "name",
+    "agents",
+    "channels",
+    "pipelines"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "编辑器提示用，可指向本地 schema/team.schema.json。"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "description": "配置格式版本；破坏性变更时递增。"
+    },
+    "id": {
+      "$ref": "#/$defs/id"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "settings": {
+      "$ref": "#/$defs/settings"
+    },
+    "agents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/agent"
+      }
+    },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/channel"
+      }
+    },
+    "pipelines": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/pipeline"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "maxLength": 64,
+      "description": "小写 kebab-case 标识符，团队内全局唯一（agent/channel/team）或 pipeline 内唯一（node）。"
+    },
+    "filePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$",
+      "description": "相对 .dsh/.dsh-workspace-team/ 的路径；禁止绝对路径、.. 段与反斜杠。"
+    },
+    "textSource": {
+      "description": "内联文本或配置文件路径，二选一。",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inline"
+          ],
+          "properties": {
+            "inline": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ],
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/filePath"
+            }
+          }
+        }
+      ]
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "reasoningEffort": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        }
+      }
+    },
+    "agentSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "会话标题模板，支持 {{team.name}} {{agent.name}} {{agent.id}} {{pipeline.name}} {{run.id}}。"
+        }
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "wake",
+            "silent"
+          ],
+          "default": "wake",
+          "description": "wake=初始化后发一条 standby 消息并让 agent 回复 READY；silent=只写系统提示词，不产生回合。"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "追加到默认 standby 消息之后的自定义说明。"
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "role"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "preset": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "DSH agent preset id；缺省用部署默认 preset。"
+        },
+        "permission": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "DSH 会话 permission preset 名称，例如本部署的 read-only / workspace-write / danger-full-access；preset 由部署解析为 sandbox + approval。缺省继承 agent preset。"
+        },
+        "model": {
+          "$ref": "#/$defs/model"
+        },
+        "systemPrompt": {
+          "$ref": "#/$defs/textSource"
+        },
+        "session": {
+          "$ref": "#/$defs/agentSession"
+        },
+        "bootstrap": {
+          "$ref": "#/$defs/bootstrap"
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "$ref": "#/$defs/engineSettings"
+        },
+        "storage": {
+          "$ref": "#/$defs/storageSettings"
+        },
+        "session": {
+          "$ref": "#/$defs/sessionSettings"
+        },
+        "humanChat": {
+          "enum": [
+            "allow",
+            "deny",
+            "steer"
+          ],
+          "default": "allow",
+          "description": "allow=用户可直接与绑定会话对话；deny=禁止输入；steer=用户消息作为 steer 注入当前 activation。"
+        }
+      }
+    },
+    "engineSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provisioning": {
+          "enum": [
+            "eager",
+            "lazy"
+          ],
+          "default": "eager",
+          "description": "eager=team up 时初始化全部 agent 会话；lazy=首次被节点使用时才初始化。"
+        },
+        "maxConcurrentActivations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 4
+        },
+        "defaultNodeTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000,
+          "default": 1800000
+        },
+        "idleGraceMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000,
+          "default": 60000,
+          "description": "agent 回合结束但未调用 team_finish 时的提醒等待时间；超时后节点判失败。"
+        },
+        "resumeInterrupted": {
+          "enum": [
+            "never",
+            "redispatch",
+            "mark-failed"
+          ],
+          "default": "mark-failed",
+          "description": "引擎重启时如何对待中断的 activation。"
+        }
+      }
+    },
+    "storageSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxArtifactBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864,
+          "default": 1048576
+        },
+        "maxInlineBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576,
+          "default": 65536
+        },
+        "retainRuns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100
+        },
+        "retainDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        }
+      }
+    },
+    "sessionSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "titleTemplate": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "default": "{{team.name}} / {{agent.name}}"
+        }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "artifact"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "from": {
+          "$ref": "#/$defs/producerParty"
+        },
+        "to": {
+          "$ref": "#/$defs/consumerParty"
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true,
+          "description": "生产者节点在 team_finish 前必须在该通道成功提交过合格交付物。对 external 生产者无意义。"
+        },
+        "acceptance": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/predicate"
+          },
+          "description": "交付物合格性条件；不满足则拒绝提交，不产生 delivery。"
+        },
+        "when": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/predicate"
+          },
+          "description": "路由条件；合格后才评估，全部满足才触发下游。为空表示总是触发。"
+        },
+        "delivery": {
+          "$ref": "#/$defs/delivery"
+        },
+        "retention": {
+          "$ref": "#/$defs/retention"
+        }
+      }
+    },
+    "producerParty": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "pipelineId",
+            "nodeId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "node"
+            },
+            "pipelineId": {
+              "$ref": "#/$defs/id"
+            },
+            "nodeId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source"
+          ],
+          "properties": {
+            "kind": {
+              "const": "external"
+            },
+            "source": {
+              "const": "user"
+            }
+          }
+        }
+      ]
+    },
+    "consumerParty": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "pipelineId",
+            "nodeId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "node"
+            },
+            "pipelineId": {
+              "$ref": "#/$defs/id"
+            },
+            "nodeId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sink",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "external"
+            },
+            "sink": {
+              "const": "file"
+            },
+            "path": {
+              "$ref": "#/$defs/workspacePath"
+            },
+            "overwrite": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        }
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "description": "交接物契约。json 必须提供 schema；text 不允许 schema。",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "schema"
+          ],
+          "properties": {
+            "kind": {
+              "const": "json"
+            },
+            "schema": {
+              "$ref": "#/$defs/filePath"
+            },
+            "schemaDialect": {
+              "enum": [
+                "2020-12",
+                "draft-07"
+              ],
+              "default": "2020-12"
+            },
+            "mimeType": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "text 的提示性 MIME，如 text/markdown；不参与校验。"
+            },
+            "minBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 67108864
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "mimeType": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "text 的提示性 MIME，如 text/markdown；不参与校验。"
+            },
+            "minBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 67108864
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          }
+        }
+      ]
+    },
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pointer",
+        "op"
+      ],
+      "properties": {
+        "pointer": {
+          "type": "string",
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "description": "RFC 6901 JSON Pointer；text 交付物只允许空指针 \"\"。"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "neq",
+            "in",
+            "not-in",
+            "exists",
+            "not-exists",
+            "matches",
+            "min-length",
+            "max-length",
+            "min",
+            "max"
+          ]
+        },
+        "value": {},
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "number": {
+          "type": "number"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "eq",
+                  "neq"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "in"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "not-in"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "matches"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "pattern"
+            ],
+            "properties": {
+              "pattern": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "min-length",
+                  "max-length"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "length"
+            ],
+            "properties": {
+              "length": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "min",
+                  "max"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "number"
+            ],
+            "properties": {
+              "number": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timing": {
+          "enum": [
+            "on-activate",
+            "immediate"
+          ],
+          "default": "on-activate",
+          "description": "on-activate=等 join 满足后随 activation 一起投递；immediate=合格即 steer/send 给消费者。"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true,
+          "description": "该通道是否是消费者 activation 的必需输入。"
+        },
+        "inline": {
+          "enum": [
+            "auto",
+            "always",
+            "path"
+          ],
+          "default": "auto"
+        },
+        "maxInlineBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576,
+          "default": 65536
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keepLast": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "keepDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "start",
+        "nodes",
+        "completion"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "start": {
+          "$ref": "#/$defs/pipelineStart"
+        },
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "completion": {
+          "$ref": "#/$defs/completion"
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "layout": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/point"
+          },
+          "description": "仅 UI 用的节点坐标，键为 node id。"
+        }
+      }
+    },
+    "pipelineStart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryNodes"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "manual",
+            "auto"
+          ],
+          "default": "manual",
+          "description": "auto=team up 后自动启动一次。"
+        },
+        "entryNodes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "briefChannel": {
+          "$ref": "#/$defs/id",
+          "description": "可选：用户启动 brief 注入的通道 id；该通道必须 from external/user。"
+        }
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terminalNodes"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "all-terminal",
+            "any-terminal"
+          ],
+          "default": "all-terminal"
+        },
+        "terminalNodes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxNodeRuns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "description": "整个 run 的节点激活总次数上限。"
+        },
+        "maxWallClockMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 604800000
+        },
+        "maxArtifacts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "agentId"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "agentId": {
+          "$ref": "#/$defs/id"
+        },
+        "instructions": {
+          "$ref": "#/$defs/textSource"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputs"
+        },
+        "activation": {
+          "$ref": "#/$defs/activation"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000
+        },
+        "position": {
+          "$ref": "#/$defs/point"
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "all",
+            "any",
+            "quorum"
+          ],
+          "default": "all",
+          "description": "all=所有 required 入通道都有未消费合格交付物；any=任一；quorum=达到 quorum 数量。"
+        },
+        "quorum": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "quorum"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "quorum"
+            ],
+            "properties": {
+              "quorum": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxActivations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "单次 run 内该节点最大激活次数；有环图必须至少有一个环上节点设置有限值。"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "onFailure": {
+          "enum": [
+            "fail-pipeline",
+            "continue",
+            "retry"
+          ],
+          "default": "fail-pipeline"
+        }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 1
+        },
+        "backoffMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000,
+          "default": 0
+        }
+      }
+    },
+    "workspacePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$",
+      "description": "相对工作区根目录的路径；禁止绝对路径、.. 段与反斜杠。"
+    }
+  }
+}
